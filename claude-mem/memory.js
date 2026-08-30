@@ -121,7 +121,7 @@ class ClaudeMem {
       oldestEntry: entries.length ? Math.min(...entries.map(e => new Date(e.timestamp).getTime())) : null,
       newestEntry: entries.length ? Math.max(...entries.map(e => new Date(e.timestamp).getTime())) : null,
       sessionCount: new Set(entries.map(e => e.sessionId)).size,
-      storageSize: fs.statSync(this.memoryFile).size
+      storageSize: fs.existsSync(this.memoryFile) ? fs.statSync(this.memoryFile).size : 0
     };
   }
 }

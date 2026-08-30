@@ -8,6 +8,7 @@ class TaskObserver {
     this.tasksFile = path.join(dataPath, 'tasks.json');
     this.metricsFile = path.join(dataPath, 'metrics.json');
     this.improvementsFile = path.join(dataPath, 'improvements.json');
+    this.skillsFile = path.join(dataPath, 'skills.json');
     this.ensureStorage();
   }
 
@@ -72,69 +73,127 @@ class TaskObserver {
     task.completedAt = completedAt;
     task.duration = duration;
 
-    // Mettre à jour les métriques
-    if (success) {
-      const prevAvg = task.metrics.avgDuration;
-      const newCount = task.metrics.attempts;
-      task.metrics.avgDuration = (prevAvg * (newCount - 1) + duration) / newCount;
-      task.metrics.successRate = (task.metrics.attempts - task.metrics.failures) / task.metrics.attempts;
-    } else {
-      task.metrics.failures++;
-      task.metrics.successRate = (task.metrics.attempts - task.metrics.failures) / task.metrics.attempts;
-    }
+    // Métriques de cette exécution
+    if (!success) task.metrics.failures++;
+    task.metrics.avgDuration = duration;
+    task.metrics.successRate = (task.metrics.attempts - task.metrics.failures) / task.metrics.attempts;
 
     // Stocker les données supplémentaires
     if (Object.keys(data).length > 0) {
       task.data = data;
     }
 
+    // Les métriques qui comptent sont cumulées sur l'identité de la tâche,
+    // pas sur cette exécution : c'est ce cumul qui déclenche les suggestions.
+    task.skill = this.skillKey(task);
+    const aggregate = this.updateAggregate(task, success, duration);
+    task.aggregate = aggregate;
+
     this.saveTasks(tasks);
     this.recordMetric(taskId, task);
-    this.analyzeAndImprove(taskId, task);
+    this.analyzeAndImprove(task, aggregate);
 
     return task;
   }
 
+  skillKey(task) {
+    return `${task.category}::${task.name}`;
+  }
+
+  updateAggregate(task, success, duration) {
+    const skills = this.loadSkills();
+    const key = this.skillKey(task);
+
+    const agg = skills[key] || {
+      key,
+      name: task.name,
+      category: task.category,
+      runs: 0,
+      successes: 0,
+      failures: 0,
+      totalDuration: 0,
+      avgDuration: 0,
+      successRate: 0,
+      firstRun: new Date().toISOString(),
+      lastRun: null
+    };
+
+    agg.runs++;
+    if (success) {
+      agg.successes++;
+      agg.totalDuration += duration;
+      agg.avgDuration = agg.totalDuration / agg.successes;
+    } else {
+      agg.failures++;
+    }
+    agg.successRate = agg.successes / agg.runs;
+    agg.lastRun = new Date().toISOString();
+
+    skills[key] = agg;
+    this.saveSkills(skills);
+    return agg;
+  }
+
   recordMetric(taskId, task) {
+    // L'historique est indexé sur l'identité de la tâche : c'est lui qui
+    // permet de lire une tendance sur plusieurs exécutions.
+    const key = task.skill || this.skillKey(task);
     const metrics = this.loadMetrics();
-    if (!metrics[taskId]) {
-      metrics[taskId] = [];
+    if (!metrics[key]) {
+      metrics[key] = [];
     }
 
-    metrics[taskId].push({
+    metrics[key].push({
+      taskId,
       timestamp: new Date().toISOString(),
       duration: task.duration,
-      success: task.status === 'completed',
-      attempts: task.metrics.attempts,
-      successRate: task.metrics.successRate
+      success: task.status === 'completed'
     });
 
     // Garder seulement les 100 dernières métriques
-    if (metrics[taskId].length > 100) {
-      metrics[taskId] = metrics[taskId].slice(-100);
+    if (metrics[key].length > 100) {
+      metrics[key] = metrics[key].slice(-100);
     }
 
     this.saveMetrics(metrics);
   }
 
-  analyzeAndImprove(taskId, task) {
+  analyzeAndImprove(task, aggregate) {
+    const key = aggregate.key;
     const improvements = this.loadImprovements();
-    if (!improvements[taskId]) {
-      improvements[taskId] = [];
+    if (!improvements[key]) {
+      improvements[key] = [];
     }
 
     // Analyse automatique des améliorations
-    const suggestions = this.generateSuggestions(taskId, task);
+    const suggestions = this.generateSuggestions(task, aggregate);
 
     suggestions.forEach(suggestion => {
-      improvements[taskId].push({
+      // Une suggestion encore ouverte du même type ne se répète pas à chaque
+      // exécution : on rafraîchit ses chiffres au lieu d'en empiler une copie.
+      const open = improvements[key].find(
+        i => i.type === suggestion.type && i.status === 'pending'
+      );
+
+      if (open) {
+        open.description = suggestion.description;
+        open.suggestedAction = suggestion.action;
+        open.impact = suggestion.impact;
+        open.timestamp = new Date().toISOString();
+        open.occurrences = (open.occurrences || 1) + 1;
+        return;
+      }
+
+      improvements[key].push({
         id: crypto.randomBytes(8).toString('hex'),
+        skill: key,
         timestamp: new Date().toISOString(),
         type: suggestion.type,
         description: suggestion.description,
         suggestedAction: suggestion.action,
         status: 'pending',
         implemented: false,
+        occurrences: 1,
         impact: suggestion.impact
       });
     });
@@ -142,35 +201,38 @@ class TaskObserver {
     this.saveImprovements(improvements);
   }
 
-  generateSuggestions(taskId, task) {
+  generateSuggestions(task, agg) {
     const suggestions = [];
 
-    // Suggestion basée sur le taux de succès
-    if (task.metrics.successRate < 0.8 && task.metrics.attempts > 3) {
+    // En dessous de 3 exécutions, les chiffres ne disent rien d'exploitable.
+    if (agg.runs < 3) return suggestions;
+
+    // Suggestion basée sur le taux de succès cumulé
+    if (agg.successRate < 0.8) {
       suggestions.push({
         type: 'reliability',
-        description: `Success rate is ${(task.metrics.successRate * 100).toFixed(1)}%`,
-        action: 'Review error handling and add validation',
-        impact: 'high'
+        description: `Taux de succès de ${(agg.successRate * 100).toFixed(0)}% sur ${agg.runs} exécutions (${agg.failures} échecs)`,
+        action: 'Revoir la gestion des erreurs et valider les entrées',
+        impact: agg.successRate < 0.5 ? 'high' : 'medium'
       });
     }
 
-    // Suggestion basée sur la durée
-    if (task.metrics.avgDuration > 5000) {
+    // Suggestion basée sur la durée moyenne des exécutions réussies
+    if (agg.successes > 0 && agg.avgDuration > 5000) {
       suggestions.push({
         type: 'performance',
-        description: `Average duration is ${task.metrics.avgDuration.toFixed(0)}ms`,
-        action: 'Optimize task execution or add caching',
-        impact: 'medium'
+        description: `Durée moyenne de ${(agg.avgDuration / 1000).toFixed(1)}s sur ${agg.successes} exécutions réussies`,
+        action: 'Optimiser l\'exécution ou mettre en cache les résultats',
+        impact: agg.avgDuration > 15000 ? 'high' : 'medium'
       });
     }
 
-    // Suggestion basée sur les tentatives
-    if (task.metrics.attempts > 5 && task.metrics.successRate < 1) {
+    // Suggestion basée sur la répétition d'échecs
+    if (agg.failures >= 3 && agg.successRate > 0) {
       suggestions.push({
         type: 'retry_strategy',
-        description: `Task requires multiple attempts`,
-        action: 'Implement exponential backoff or improve initial logic',
+        description: `${agg.failures} échecs pour ${agg.successes} succès : la tâche est instable`,
+        action: 'Ajouter un retry avec backoff exponentiel',
         impact: 'high'
       });
     }
@@ -181,21 +243,32 @@ class TaskObserver {
   getTaskStats(taskId) {
     const tasks = this.loadTasks();
     const task = tasks[taskId];
-    const metrics = this.loadMetrics()[taskId] || [];
-
     if (!task) return null;
+
+    const key = task.skill || this.skillKey(task);
+    const history = this.loadMetrics()[key] || [];
+    const agg = this.loadSkills()[key];
 
     return {
       task,
       metrics: {
-        total: metrics.length,
-        avgDuration: task.metrics.avgDuration,
-        successRate: task.metrics.successRate,
-        failures: task.metrics.failures,
-        successCount: task.metrics.attempts - task.metrics.failures
+        total: history.length,
+        runs: agg ? agg.runs : 0,
+        avgDuration: agg ? agg.avgDuration : 0,
+        successRate: agg ? agg.successRate : 0,
+        failures: agg ? agg.failures : 0,
+        successCount: agg ? agg.successes : 0
       },
-      trend: this.calculateTrend(metrics)
+      trend: this.calculateTrend(history)
     };
+  }
+
+  getSkillStats(name, category = 'general') {
+    return this.loadSkills()[`${category}::${name}`] || null;
+  }
+
+  getAllSkills() {
+    return this.loadSkills();
   }
 
   calculateTrend(metrics) {
@@ -214,17 +287,26 @@ class TaskObserver {
     return 'stable';
   }
 
-  getImprovements(taskId) {
-    const improvements = this.loadImprovements();
-    return improvements[taskId] || [];
+  // Accepte un id de tâche ou directement une clé de skill ("categorie::nom").
+  resolveKey(taskIdOrKey) {
+    if (taskIdOrKey.includes('::')) return taskIdOrKey;
+    const task = this.loadTasks()[taskIdOrKey];
+    if (!task) return taskIdOrKey;
+    return task.skill || this.skillKey(task);
   }
 
-  implementImprovement(taskId, improvementId) {
+  getImprovements(taskIdOrKey) {
     const improvements = this.loadImprovements();
+    return improvements[this.resolveKey(taskIdOrKey)] || [];
+  }
 
-    if (!improvements[taskId]) return null;
+  implementImprovement(taskIdOrKey, improvementId) {
+    const improvements = this.loadImprovements();
+    const key = this.resolveKey(taskIdOrKey);
 
-    const improvement = improvements[taskId].find(i => i.id === improvementId);
+    if (!improvements[key]) return null;
+
+    const improvement = improvements[key].find(i => i.id === improvementId);
     if (!improvement) return null;
 
     improvement.implemented = true;
@@ -277,6 +359,16 @@ class TaskObserver {
 
   saveImprovements(improvements) {
     fs.writeFileSync(this.improvementsFile, JSON.stringify(improvements, null, 2));
+  }
+
+  loadSkills() {
+    if (!fs.existsSync(this.skillsFile)) return {};
+    const content = fs.readFileSync(this.skillsFile, 'utf-8');
+    return content ? JSON.parse(content) : {};
+  }
+
+  saveSkills(skills) {
+    fs.writeFileSync(this.skillsFile, JSON.stringify(skills, null, 2));
   }
 
   generateReport() {

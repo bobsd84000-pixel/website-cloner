@@ -1,22 +1,21 @@
 {
-  "name": "tarik-toolkit",
+  "name": "website-cloner",
   "version": "1.0.0",
-  "description": "Integrated Claude Toolkit with Memory, Setup, and Task Observer",
+  "description": "Cloneur de site statique, avec le toolkit Claude (mémoire, setup, observer)",
   "main": "index.js",
   "scripts": {
     "test": "node examples/complete-demo.js",
     "demo": "node examples/complete-demo.js",
-    "validate": "node -c index.js && echo '✓ Syntax valid'"
+    "validate": "node --check index.js && node --check claude-mem/memory.js && node --check claude-code-setup/setup.js && node --check task-observer/observer.js && echo 'Syntaxe valide'"
   },
   "keywords": [
+    "website-cloner",
     "claude",
     "toolkit",
     "memory",
-    "setup",
-    "observer",
-    "task-tracking"
+    "observer"
   ],
-  "author": "Claude Code",
+  "author": "",
   "license": "MIT",
   "engines": {
     "node": ">=14.0.0"
