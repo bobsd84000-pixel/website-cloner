@@ -1,0 +1,24 @@
+{
+  "name": "tarik-toolkit",
+  "version": "1.0.0",
+  "description": "Integrated Claude Toolkit with Memory, Setup, and Task Observer",
+  "main": "index.js",
+  "scripts": {
+    "test": "node examples/complete-demo.js",
+    "demo": "node examples/complete-demo.js",
+    "validate": "node -c index.js && echo '✓ Syntax valid'"
+  },
+  "keywords": [
+    "claude",
+    "toolkit",
+    "memory",
+    "setup",
+    "observer",
+    "task-tracking"
+  ],
+  "author": "Claude Code",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
