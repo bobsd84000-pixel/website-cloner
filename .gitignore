@@ -1,6 +1,1 @@
-node_modules/
-
-# État écrit à l'exécution par le toolkit
-.claude-mem/
-.task-observer/
-.claude/
+.DS_Store
